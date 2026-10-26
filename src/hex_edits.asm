@@ -44,6 +44,15 @@ ORG $00FFE6
 ORG $008C04
     LDA #$1B6F
 
+; RNG after a reset: 221 189 ($BDDD) instead of 119 119 ($7777). In a run, skipping the title
+; screen as fast as possible still advances the RNG once (2026-10-08, the user's request).
+; The RNG count of the RNG menus still counts from $7777.
+; LDA #$7777 : STA $3743 -> reset_rng (init.asm). Not when the game starts on the title screen
+; (タイトル とばす off): going through it advances the RNG as in a run.
+ORG $008C12
+    JSL reset_rng
+    NOP #2
+
 ; Leave every Dyna Blade stage
 ; always show leave menu
 ; BEQ $0C -> BRA $04
@@ -88,6 +97,14 @@ ORG $0387F4
 ; BEQ -> BRA
 ORG $07DA3E
     db $80
+
+; MWW pause (ability select): the 1P / 2P cursors don't blink (2026-10-10, the user's wish: screen burn-in).
+; Cursor animation scripts at $CFAE26 / $CFAE3D: frame 04 / 06 for 3 frames, then 05 / 07 (blank)
+; for 1 frame, loop. The blank frame becomes the normal one.
+ORG $1FAE29
+    db $04
+ORG $1FAE40
+    db $06
 
 ; Disable GCO treasure menu (so it doesn't override X button combos)
 ; LDA #$1040 -> LDA #$1000

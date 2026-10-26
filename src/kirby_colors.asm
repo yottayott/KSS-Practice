@@ -53,7 +53,7 @@ apply_colors:
         ; Set pointer to 0 since that is where flashing colors are
         LDX #$0000
     .set_color:
-        LDA palette_table,X
+        LDA.l palette_table,X
         TAX
         LDY #$0600
         LDA #$0013

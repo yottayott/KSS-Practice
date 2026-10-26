@@ -5,13 +5,171 @@
 !sfx_load_state = #$10
 !sfx_room_reset = #$28
 
-!temp_stack_pointer_location = $40FFE0
+; !temp_stack_pointer_location and !screen_fade_from_savestate are in defines.asm
 !music_from_savestate = $408FCA     ; current music RAM ($33CA) from the savestate data
 !helper_ability_from_savestate = $40D8A1    ; current helper ability RAM ($74A1) from the savestate data
 !ability_sfx_from_savestate = $4020AA    ; stores the ability sounds loaded in the state so that they will be reloaded properly
-!screen_fade_from_savestate = $40FFFF  ; for saving brightness value upon loading a state
+
+; !state_magic_value is in defines.asm
+
+!apu_song_loaded = $00A8        ; WRAM, $00A8 = song and $00A9 = sample bank currently uploaded to the APU
+!save_apu_song_loaded = $40FFB6
+
+; Copy a block between WRAM and SRAM with DMA through the WRAM port ($2180).
+; This is several times faster than MVN. Needs 8-bit A, 16-bit X/Y and DB in $00-$3F.
+macro wram_dma(direction, wram, sram, size)
+    LDX.w #(<wram>)&$FFFF
+    STX $2181
+    LDA.b #((<wram>)>>16)&$01
+    STA $2183
+    LDA.b #<direction>
+    STA $4300
+    LDA #$80
+    STA $4301
+    LDX.w #(<sram>)&$FFFF
+    STX $4302
+    LDA.b #(<sram>)>>16
+    STA $4304
+    LDX.w #<size>
+    STX $4305
+    LDA #$01
+    STA $420B
+endmacro
+
+!dma_wram_to_sram = $80
+!dma_sram_to_wram = $00
+
+; SA-1 replacement for the wait loop inside the "run on S-CPU" routine ($008C6D).
+; Every SA-1 frame ends in this loop while the S-CPU reads the controllers, which is
+; exactly where savestates are taken. The SA-1 stack lives in I-RAM ($37FF) and is part of the
+; savestate, but the stack pointer is a CPU register, so it is recorded here. When a state is
+; loaded the recorded stack pointer is put back, otherwise the SA-1 returns through a stack
+; from a different call depth (e.g. loading while paused) and crashes.
+pushpc
+ORG $008C93
+    JML sa1_wait_for_snes
+pullpc
+
+sa1_wait_for_snes:
+    PHP
+    REP #$30
+    PHA
+    PHX
+    PHY
+    PHB
+    PHD
+    ; the end of a frame (it waits for the NMI anyway)
+    LDA.l $00300C
+    CMP #$8A56
+    BNE .not_frame_end
+    ; Kirby's "on the ground" flag is not updated while riding Wheelie, and mounting always hops,
+    ; so it is 0 while riding. A warp or R+X while Kirby stands on the ground leaves it at 1
+    ; (the game runs another frame before the room reloads), which lets Kirby turn in the air
+    ; during a rider dash: keep it at 0 while riding (in the NMI until 2026-10-16).
+    LDA.l !wheelie_rider_state_long
+    AND #$00FF
+    BEQ +
+    LDA #$0000
+    STA.l !kirby_on_ground_long
+    +
+    if !lag_baseline == 0
+    JSL rng_count_sa1           ; the RNG count (rng_count.asm), before the HUDs draw it
+    if !pb
+    JSL pb_sa1                  ; the room PBs (pb.asm), before the HUDs draw the PB
+    endif
+    JSL hud_slot_sa1            ; the timer / RNG of the HUD (hud_timer.asm)
+    if !detail_hud
+    JSL detail_hud_sa1          ; the しょうさい HUD (detail_hud.asm)
+    endif
+    endif
+    BRA +
+    .not_frame_end:
+    if !detail_hud
+    CMP #$A2B3                  ; the game's HUD routine ($01A2B3 in the levels, $018078): the
+    BEQ ++                      ; しょうさい HUD is drawn at the end of this frame
+    CMP #$8078
+    BNE +
+    ++
+    LDA.l $00300E
+    CMP #$8001
+    BNE +
+    STA.l !detail_hud_ran
+    endif
+    +
+    TSC
+    STA.l !sa1_park_sp
+    LDA #$0001
+    STA.l !sa1_parked
+
+    .loop:
+        LDA.l !sa1_resume
+        BNE .resume
+        LDA.l $00300A       ; S-CPU wants the SA-1 to run something
+        BMI .run_request
+        LDA.l $00300E       ; S-CPU still busy with our request
+        BMI .loop
+
+        LDA #$0000
+        STA.l !sa1_parked
+        PLD
+        PLB
+        PLY
+        PLX
+        PLA
+        PLP
+        JML $008C9D         ; STZ $2209 : RTL
+
+    .resume:
+        ; a savestate was just loaded, switch to the stack pointer saved with it
+        LDA #$0000
+        STA.l !sa1_resume
+        LDA.l !sa1_resume_sp
+        TCS
+        BRA .loop
+
+    .run_request:
+        ; same as the original code at $008CA1 / $008C8A
+        LDA #$0000
+        STA.l !sa1_parked   ; not idle while running the request
+        STA.l $002209
+        PHK
+        PEA.w (.request_done-1)&$FFFF
+        JML [$3008]
+    .request_done:
+        REP #$30
+        LDA #$0000
+        STA.l $00300A
+        LDA #$0001
+        STA.l $002209
+        STA.l !sa1_parked
+        BRA .loop
+
+; Returns carry set if the SA-1 is waiting at the end of a frame in sa1_wait_for_snes,
+; which is the only point where the SA-1 can safely be swapped to/from a savestate.
+; Expects 16-bit A and DB = $00.
+check_sa1_parked:
+    LDA $3010           ; frame finished, waiting for this NMI
+    BNE .no
+    LDA.l !sa1_parked
+    BEQ .no
+    LDA $300C           ; the S-CPU request is the end of frame controller read
+    CMP #$8A56
+    BNE .no
+    LDA $300E
+    CMP #$8000
+    BNE .no
+    SEC
+    RTS
+    .no:
+        CLC
+        RTS
 
 save_state:
+    REP #$30
+    JSR check_sa1_parked
+    BCS +
+    RTL
+    +
 
     SEP #$30
 
@@ -24,23 +182,21 @@ save_state:
     REP #$20
     TSC                     ; Transfer stack pointer
     STA !temp_stack_pointer_location
+    LDA.l !sa1_park_sp      ; and the SA-1 stack pointer
+    STA.l !state_sa1_sp
+
+    SEP #$20
+    REP #$10
+
+    ; WRAM $7E0000-$7E1FFF to $402000-$403FFF
+    %wram_dma(!dma_wram_to_sram, $7E0000, $402000, $2000)
+    ; level data(?) in WRAM $7EB400-$7EFFFF to $404000-$408BFF
+    %wram_dma(!dma_wram_to_sram, $7EB400, $404000, $4C00)
+    ; current level layout in WRAM $7F0000-$7F2FFF to $409400-$40C3FF
+    %wram_dma(!dma_wram_to_sram, $7F0000, $409400, $3000)
 
     .mvn_instructions:
-        REP #$20
-
-        ; Copy savestate data to expanded SaveRAM
-
-        ; WRAM
-        LDX #$0000          ; Copy first portion of WRAM $7E0000-$7E1FFF to $402000-$403FFF
-        LDY #$2000
-        LDA #$1FFF
-        MVN $40,$7E
-
-        ; WRAM 
-        LDX #$B400          ; Copy level data(?) in WRAM $7EB400-$7EFFFF to $404000-$408BFF
-        LDY #$4000
-        LDA #$4BFF
-        MVN $40,$7E
+        REP #$30
 
         ; Room Reload Data  ; Copy custom room reload data to another block directly next to it
         LDX.w #!room_reload_storage
@@ -54,52 +210,63 @@ save_state:
         LDA #$07FF
         MVN $40,$00
 
-        ; WRAM
-        LDX #$0000          ; Copy current level layout in WRAM $7F0000-$7F1FFF to $409400-$40B3FF
-        LDY #$9400
-        LDA #$2FFF
-        MVN $40,$7F
-
         ; SAVERAM
         LDX #$0000          ; Copy SaveRAM $400000-$401FFF to $40C400-$40E3FF
         LDY #$C400
         LDA #$1FFF
-        MVN $40,$40 
+        MVN $40,$40
 
-        LDA #$0000          ; Reset
-        MVN $00,$00
+        ; the HUD timer (outside of the data above)
+        LDX.w #!seg_timer_frac&$FFFF
+        LDY.w #!seg_timer_saved&$FFFF
+        LDA.w #!seg_timer_saved_size-1
+        MVN $40,$40
 
-        .dma_instructions:
         SEP #$20
-        LDX #$0000      ; add comments here later as per the restore code
+        LDA #$00            ; Reset data bank
+        PHA
+        PLB
+
+    .dma_instructions:
+        LDA #$80        ; VRAM address goes up after the high byte ($2115 is not always $80
+        STA $2115       ; here: hud_slot_upload. Set it before $2116, which starts the read)
+        LDX #$0000      ; VRAM address
         STX $2116
-        LDX #$0000      
-        STX $4302       
-        LDA #$41        
-        STA $4304       
-        LDX #$FFFF
-        STX $4305       
-        LDA #$39        
-        STA $4301       
-        LDA #$81        
-        STA $4300       
-        LDA #$01        
+        LDX #$0000      ; Destination offset
+        STX $4302
+        LDA #$41        ; Destination bank
+        STA $4304
+        LDX #$FFFF      ; # of bytes to copy
+        STX $4305
+        LDA #$39        ; read from $2139
+        STA $4301
+        LDA #$81        ; PPU -> CPU, write mode 1
+        STA $4300
+        LDA #$01
         STA $420B
- 
+
+    REP #$20
+    LDA #!state_magic_value
+    STA.l !state_magic
+
     JSR disable_vblank
 
     REP #$30
+    RTL
 
-    STZ !temp_pointer   ; clear address for loading SA-1 stack pointer
-
-    RTS
-
-restore_state: 
+; NOTE: this returns through the stack of the saved state, i.e. to the instruction after
+; "JSL save_state" in nmi_code.
+restore_state:
+    REP #$30
+    LDA.l !state_magic       ; nothing (valid) saved yet
+    CMP #!state_magic_value
+    BNE +
+    JSR check_sa1_parked
+    BCS ++
+    + RTL
+    ++
 
     SEP #$30
-    
-    LDA #$01
-    STA !active_frames  ; avoid game hanging if room is reset while loading something else
 
     LDA !sfx_load_state          ;Sound effect played
     STA !current_sfx
@@ -113,18 +280,23 @@ restore_state:
 
     .restore_music
         SEP #$20
-        LDA !music_from_savestate            
+        LDA !music_from_savestate
         CMP !current_music
         BEQ +
         STA !current_music
         JSL !load_music
         +
 
+    ; keep the sound state that is currently loaded in the APU
+    LDA !sound_buffer
+    STA !save_sound_buffer
     LDA !sound_bank_1
     STA !save_sound_bank_1
     REP #$20
     LDA !sound_bank_2     ; make sure sound banks are reloaded if they are different
     STA !save_sound_bank_2
+    LDA !apu_song_loaded  ; song / sample bank that is really in the APU right now
+    STA !save_apu_song_loaded
 
     .restore_helper_graphics
         ; Restore helper graphics from the previous savestate
@@ -141,7 +313,11 @@ restore_state:
         CMP !helper_ability
         BEQ .merge
 
+        ; the helper number was loaded with 8-bit A, so the high byte still holds whatever
+        ; was loaded before (e.g. $00A9). assign_helper_data uses all 16 bits as an index and
+        ; a garbage value makes it wait for VRAM queue space forever (NMI is off -> black screen)
         REP #$30
+        AND #$00FF
         LDX #$0004
         LDY #$0004
         JSL !assign_helper_data
@@ -153,32 +329,49 @@ restore_state:
         ; Restore savestate from SRAM
 
         JSR compare_level_data
-        
+
         ; SA1
-        LDX #$8C00          ; Copy SA-1 IRAM $003000-$0037FF to $408C00-$4093FF
+        LDX #$8C00          ; Copy $408C00-$4093FF to SA-1 IRAM $003000-$0037FF
         LDY #$3000
         LDA #$07FF
         MVN $00,$40
+
+        ; The SA-1 stack now holds the loaded state, so switch the SA-1 to the stack pointer
+        ; saved with it right away, before the routines below can make the SA-1 run code and
+        ; push onto that stack from the old position. The SA-1 is spinning and answers at once.
+        LDA.l !state_sa1_sp
+        STA.l !sa1_resume_sp
+        LDA #$0001
+        STA.l !sa1_resume
+        LDX #$0000
+        - LDA.l !sa1_resume
+        BEQ +
+        DEX                 ; give up after a while instead of hanging
+        BNE -
+        +
 
         LDA !screen_fade
         STA !screen_fade_from_savestate
 
         JSR restore_level_data
 
+        SEP #$20
+        LDA #$00            ; game routines above may leave a different data bank
+        PHA
+        PLB
+        REP #$20
+
         LDA !screen_fade_from_savestate
         STA !screen_fade
 
-        ; WRAM
-        LDX #$2000          ; Copy first portion of WRAM $7E0000-$7E1FFF to $402000-$403FFF
-        LDY #$0000
-        LDA #$1FFF
-        MVN $7E,$40
-
-        ; WRAM 
-        LDX #$4000          ; Copy level data(?) in WRAM $7EB400-$7EFFFF to $404000-$408BFF
-        LDY #$B400
-        LDA #$4BFF
-        MVN $7E,$40
+        SEP #$20
+        ; WRAM $7E0000-$7E1FFF from $402000-$403FFF
+        %wram_dma(!dma_sram_to_wram, $7E0000, $402000, $2000)
+        ; level data(?) in WRAM $7EB400-$7EFFFF from $404000-$408BFF
+        %wram_dma(!dma_sram_to_wram, $7EB400, $404000, $4C00)
+        ; current level layout in WRAM $7F0000-$7F2FFF from $409400-$40C3FF
+        %wram_dma(!dma_sram_to_wram, $7F0000, $409400, $3000)
+        REP #$20
 
         ; Room Reload Data  ; Copy custom room reload data to another block directly next to it
         LDX.w #!room_reload_storage_state
@@ -187,35 +380,52 @@ restore_state:
         MVN $40,$40
 
         ; SAVERAM
-        LDX #$C400          ; Copy SaveRAM $400000-$401FFF to $40C400-$40E3FF
+        LDX #$C400          ; Copy $40C400-$40E3FF to SaveRAM $400000-$401FFF
         LDY #$0000
         LDA #$1FFF
-        MVN $40,$40 
+        MVN $40,$40
 
-        ; WRAM
-        LDX #$9400          ; Copy current level layout in WRAM $7F0000-$7F1FFF to $409400-$B3FF
-        LDY #$0000
-        LDA #$2FFF
-        MVN $7F,$40
+        ; the HUD timer as it was at the save (no restart, a pending warp RNG is cancelled)
+        LDX.w #!seg_timer_saved&$FFFF
+        LDY.w #!seg_timer_frac&$FFFF
+        LDA.w #!seg_timer_saved_size-1
+        MVN $40,$40
+        LDA #$0000
+        STA.l !seg_timer_reset
+        STA.l !seg_pending_rng_flag
+        STA.l !seg_room_door
+        LDA.l !room_number_long     ; the room of the loaded state
+        AND #$00FF
+        STA.l !seg_timer_room
+        JSL room_loop_capture       ; and its entry, for the room loop (segment_timer.asm)
+        if !pb
+        LDA #$0001                  ; this room's run does not count for the PB (pb.asm)
+        STA.l !pb_dirty
+        endif
 
-        LDA #$0000          ; Reset
-        MVN $00,$00
+        SEP #$20
+        LDA #$00            ; Reset data bank
+        PHA
+        PLB
+        REP #$20
 
         LDA #$FFFF
-        STA $3000           ; Set first two bytes in SA-1 to $FFFF so pause menu doesn't glitch out (don't ask why)
+        STA $3000           ; SA-1 "running" flag, must stay $FFFF
 
         LDA #$0001
         STA $7E04B1         ; Temporary value for DMA writes to the tileset. Clearing so this doesn't make glitchy graphics on load.
 
         .restore_vram:
         SEP #$20
+        LDA #$80        ; VRAM address goes up after the high byte (see save_state)
+        STA $2115
         LDX #$0000
         STX $2116
         LDX #$0002      ;Source Offset into source bank
         STX $4302       ;Set Source address lower 16-bits
         LDA #$41        ;Source bank
         STA $4304       ;Set Source address upper 8-bits
-        LDX #$FFFF      ;# of bytes to copy 
+        LDX #$FFFF      ;# of bytes to copy
         STX $4305       ;Set DMA transfer size
         LDA #$18        ;$2118 is the destination, so
         STA $4301       ;  set lower 8-bits of destination to $18
@@ -223,6 +433,9 @@ restore_state:
         STA $4300       ;  using write mode 1 (meaning write a word to $2118/$2119)
         LDA #$01        ;The registers we've been setting are for channel 0
         STA $420B       ;  so Start DMA transfer on channel 0 (LSB of $420B)
+
+    LDA #$01            ; the timer / RNG of the HUD: all 7 tiles again (hud_timer.asm)
+    STA.l !hud_slot_force
 
     JSR disable_vblank
 
@@ -234,10 +447,10 @@ restore_state:
     REP #$30
     LDA !save_sound_bank_2
     STA !sound_bank_2
+    LDA !save_apu_song_loaded
+    STA !apu_song_loaded
 
-    STZ !temp_pointer   ; clear address for loading SA-1 stack pointer
-
-    RTS
+    RTL
 
 
 ; Load all of the level data from the previous state
@@ -493,6 +706,12 @@ restore_on_room_restart:
         STA !ability
         STZ $36C8       ; address used for tracking if swimming. needs to be cleared or game will crash
         STZ !helper_ability+1   ; clear this byte so that it isn't #$FF if it is
+        REP #$20
+        LDA #$0042    ; riding action of Kirby and Wheelie, otherwise Kirby moves as if not riding
+        STA $7493     ; after getting off and reloading the room
+        STA $7495
+        STZ $36EC     ; Kirby's "on the ground" flag: not updated while riding, 1 lets Kirby turn in the air
+        SEP #$20
         LDA #$0D      ; Wheel ability (for Wheelie). Forcing this here because you'd only be riding on Wheelie.
         BRA .reload_helper
 
@@ -501,8 +720,9 @@ restore_on_room_restart:
         LDA !store_ability
         CMP !ability
         BEQ +
-        JSR quick_select_ability
-        + 
+        LDY #$0002          ; same as quick_select_ability (that one is in another bank)
+        JSL !assign_ability_data
+        +
 
     .restore_helper_ability
         LDA !store_helper_ability
@@ -580,9 +800,35 @@ restore_on_room_restart:
     LDA !store_helper_flashing
     STA !helper_inv_flash
     
-    ; audio
-    ;LDA !store_ability_sfx
-    ;STA !current_ability_sfx
+    ; audio: the ability sounds in the APU as when the room was entered. Getting an ability
+    ; uploads its sound bank unless it is the one in $AA, which made the freeze 10 frames
+    ; shorter after R+X / the room loop (2026-10-10). Writing $AA alone would play wrong sounds
+    ; after another ability was got in the room: upload the bank ($00D2AE: A = bank, Y = slot 0,
+    ; DB = $00). Bank 0 is no bank (its pointer is not ROM): nothing loaded, the next ability loads.
+    SEP #$30
+    LDA !store_ability_sfx
+    CMP !current_ability_sfx
+    BEQ .sfx_done
+    CMP #$00
+    BNE +
+    STZ !current_ability_sfx
+    BRA .sfx_done
+    +
+    ; the upload takes about 11 frames: no NMI meanwhile (this runs in the NMI; R+X has already
+    ; disabled it, the room loop enables it again after room_loop_restore)
+    STZ $4200
+    PHB
+    PHA
+    LDA #$00
+    PHA
+    PLB
+    PLA
+    LDY #$00
+    JSL $00D2AE                     ; returns with REP #$30
+    SEP #$30
+    PLB
+    LDA $4210                       ; clear the NMI flag of the frames it took
+    .sfx_done:
 
     SEP #$20
     REP #$10
@@ -655,7 +901,7 @@ restore_current_room:
 
     .break:
         REP #$30
-        RTS
+        RTL
 
     .reload_saved_values:
         ; If holding L, do not reload stored values and instead store new ones
@@ -703,4 +949,52 @@ disable_vblank:
     STA !QSQL_timer     ; Set amount of frames until next QSQL is allowed
     RTS
 
+; room loop (room_loop_check, NMI): the values of R+X, the game itself reloads the room
+room_loop_restore:
+    SEP #$20
+    INC !is_reloading_room          ; do not save the values again on this load
+    JSR restore_on_room_restart
+    REP #$30
+    RTL
+
 ; D2E2 subroutine that loads ability sfx 
+
+; L + R + B during gameplay: room loop on / off (also the top items of the main menu), with a
+; sound: the one of getting an ability for on, the menu's "back" for off.
+; Called from every_gameplay_frame (SA-1), keeps the register widths.
+room_loop_hotkey:
+    PHP
+    REP #$30
+    LDA !p1controller_hold
+    AND #$0030
+    CMP #$0030
+    BNE .done
+    LDA !p1controller_frame
+    BIT #!btn_b
+    BEQ .done
+    PHX
+    PHY
+    LDA.l !room_loop_on
+    EOR #$0001
+    STA.l !room_loop_on
+    SEP #$20
+    BEQ +
+    LDA #$44                ; on
+    BRA ++
+    +
+    LDA #$28                ; off
+    ++
+    STA.l !current_sfx_long
+    REP #$20
+    LDA.w #.on_snes
+    LDX.w #bank(.on_snes)
+    JSL !sa1_executesnes
+    REP #$30
+    PLY
+    PLX
+    .done:
+    PLP
+    RTL
+    .on_snes:
+    JSL !play_sfx_long
+    RTL

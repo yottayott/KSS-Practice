@@ -2,5 +2,5 @@
 
 cp original.sfc patched.sfc
 
-# Run the command "./asar patch.asm patched.sfc"
-asar patch.asm patched.sfc
+# asar in this folder
+./asar patch.asm patched.sfc

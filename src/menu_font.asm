@@ -668,38 +668,49 @@ macro jp(str)
   db $FF
 endmacro
 
+; only the language of the build is in the ROM (!menu_english, defines.asm): both pointers
+; point to it
 macro text(en_text, jp_text)
-  dw ?en_label
-  dw ?jp_label
+  dw ?label
+  dw ?label
 
-  ?en_label: %en("<en_text>")
-  ?jp_label: %jp("<jp_text>")
+  if !menu_english
+    ?label: %en("<en_text>")
+  else
+    ?label: %jp("<jp_text>")
+  endif
 endmacro
 
 macro en_jp_text(text)
-  dw ?en_label
-  dw ?jp_label
+  dw ?label
+  dw ?label
 
-  ?en_label: %en("<text>")
-  ?jp_label:
-    db $FE
-    %text_raw("<text>")
-    db $FE, $00
-    %tail_raw("<text>")
-    db $FF
+  if !menu_english
+    ?label: %en("<text>")
+  else
+    ?label:
+      db $FE
+      %text_raw("<text>")
+      db $FE, $00
+      %tail_raw("<text>")
+      db $FF
+  endif
 endmacro
 
 macro en_jp_different_text(en_text, jp_text)
-  dw ?en_label
-  dw ?jp_label
+  dw ?label
+  dw ?label
 
-  ?en_label: %en("<en_text>")
-  ?jp_label:
-    db $FE
-    %text_raw("<jp_text>")
-    db $FE, $00
-    %tail_raw("<jp_text>")
-    db $FF
+  if !menu_english
+    ?label: %en("<en_text>")
+  else
+    ?label:
+      db $FE
+      %text_raw("<jp_text>")
+      db $FE, $00
+      %tail_raw("<jp_text>")
+      db $FF
+  endif
 endmacro
 
 macro text_with_label(en_text, jp_text, addr, display_func)

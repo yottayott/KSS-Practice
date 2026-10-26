@@ -124,6 +124,15 @@ cycle_abilities:
     + RTS
 
 quick_select_ability:
+    if !pb
+    PHP
+    REP #$20
+    PHA
+    LDA #$0001                  ; this room's run does not count for the PB (pb.asm)
+    STA.l !pb_dirty
+    PLA
+    PLP
+    endif
     LDY #$0002
     JSL !assign_ability_data
     ;LDX #$0218

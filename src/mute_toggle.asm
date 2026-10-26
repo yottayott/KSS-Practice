@@ -59,7 +59,7 @@ change_audio_output:
     .turn_off_mute
         STZ !mute_toggle
         LDA #$FF 
-        STA !volume 
+        JSR check_if_muted  ; (was STA !volume)
         STZ !stereo_mono    ; switch to stereo
 
     .finalize_apuio
@@ -81,6 +81,11 @@ check_if_muted:
 
     .end:
         RTS
+
+; check_if_muted for the menu (bank $19): A (8-bit) = the volume wanted
+check_if_muted_long:
+    JSR check_if_muted
+    RTL
 
 set_button_gfx:
     SEP #$20

@@ -176,11 +176,11 @@ convert_planet_id:
     BNE .anypercent
 
     .100percent
-        LDA mww_planets_100_order,X
+        LDA.l mww_planets_100_order,X
         BRA .end
 
     .anypercent
-        LDA mww_planets_any_order,X
+        LDA.l mww_planets_any_order,X
 
     .end
         TAX
@@ -212,11 +212,11 @@ mww_assign_starting_abilities:
     BNE .find_any_abilities
     
     .find_100_abilities:
-        LDA ability_table_1,X   ;\  apply new abilities for 100%
+        LDA.l ability_table_1,X   ;\  apply new abilities for 100%
         STA !abilities_saved_1  ;|
-        LDA ability_table_2,X   ;|
+        LDA.l ability_table_2,X   ;|
         STA !abilities_saved_2  ;|
-        LDA ability_table_3,X   ;|
+        LDA.l ability_table_3,X   ;|
         STA !abilities_saved_3  ;/
         LDA #$02
         STA !number_of_abilities    ; set number of abilities to anything greater than 1 so they can be cycled through menu
@@ -224,7 +224,7 @@ mww_assign_starting_abilities:
         
     .find_any_abilities: 
         ; apply Hammer / Plasma
-        LDA ability_table_any,X
+        LDA.l ability_table_any,X
         STA !abilities_saved_1
 
         ; apply Jet
@@ -234,7 +234,7 @@ mww_assign_starting_abilities:
         STZ !abilities_saved_3      ; no powers in this address should be collected in any%
 
         ; apply ability quantity
-        LDA ability_amount_any,X
+        LDA.l ability_amount_any,X
         STA !number_of_abilities
 
         ; remove Plasma if not taking Plasma route
@@ -278,7 +278,7 @@ mww_multiply_map_movement_speed:
     CMP #$0200
     BNE +
     LDA !kirby_x_pos
-    CLC
+    SEC
     SBC #$0005
     STA !kirby_x_pos
 
@@ -305,7 +305,7 @@ mww_multiply_map_movement_speed:
     CMP #$0800
     BNE +
     LDA !kirby_y_pos 
-    CLC
+    SEC
     SBC #$0005
     STA !kirby_y_pos
     

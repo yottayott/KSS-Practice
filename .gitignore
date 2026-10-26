@@ -1,6 +1,28 @@
+# Copyrighted ROM images and generated patched ROMs
 *.sfc
-*.ips
-asar
-asar.exe
-graphics/bin/*.exe
-/dll
+*.smc
+
+# Locally built/downloaded Asar executable
+/asar
+/asar.exe
+
+# Patch/build leftovers
+*.bak
+*.tmp
+*.log
+
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*~
+
+# Debug symbols
+*.sym
+
+# Local test output (screenshots of the room warps, lag_record.lua / lag_play.lua data)
+/screenshots/
+/tools/lag/
+__pycache__/

@@ -7,6 +7,8 @@ ORG $01A743
 pullpc
 
 room_reload_code:        ;custom code start  
+    REP #$20
+    JSL room_loop_capture   ; the entry of the room, for the room loop (segment_timer.asm)
     SEP #$20
     LDA !is_reloading_room
     CMP #$00

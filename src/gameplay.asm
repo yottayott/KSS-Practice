@@ -2,8 +2,10 @@
 
 pushpc
 
+if !lag_baseline == 0
 ORG $00C1BC
     JSR every_gameplay_frame
+endif
 
 pullpc
 
@@ -13,8 +15,11 @@ every_gameplay_frame:
 ; A + L/R      = Common abilities
 ; A + L + R    = Cycle abilities
 ; Y + L + R    = Toggle free movement
+; B + L + R    = Toggle the room loop
 
 LDA !p1controller_hold
+BIT #$0030                      ; neither L nor R: no hotkey (2026-10-16, fewer cycles every frame)
+BEQ .free_move_check_done
 
 BIT #$0080                      ; A held
 BEQ .free_move_toggle_check
@@ -32,6 +37,7 @@ BRA .free_move_toggle_check
     JSR cycle_abilities
 
 .free_move_toggle_check:
+    JSL room_loop_hotkey        ; L + R + B: room loop on / off (qsql.asm)
     LDA !wheelie_rider_state    ; don't activate while riding on wheelie or game will crash
     BNE .free_move_check_done
 
@@ -75,6 +81,10 @@ BRA .free_move_toggle_check
     INC !intangible_to_items
 
     REP #$30
+    if !pb
+    LDA #$0001                  ; this room's run does not count for the PB (pb.asm)
+    STA.l !pb_dirty
+    endif
 
     LDA #$8BC9                  ; Intangible movement routine
     STA !global_jump_pointer
